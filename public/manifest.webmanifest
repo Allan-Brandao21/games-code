@@ -1,7 +1,7 @@
 {
-  "name": "Jarvis Mobile",
-  "short_name": "Jarvis",
-  "description": "Dash Jarvis no celular, com dados da PagAmerican",
+  "name": "Jarvis AOV",
+  "short_name": "Jarvis AOV",
+  "description": "Dash de AOV no celular, com dados da PagAmerican",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

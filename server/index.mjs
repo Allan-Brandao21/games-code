@@ -51,8 +51,14 @@ async function handleApi(req, url, res) {
     if (!RANGES.includes(range)) return json(res, 400, { error: `range inválido. Use: ${RANGES.join(', ')}` });
     const source = url.searchParams.get('source') || config.dataSource;
     const fresh = url.searchParams.get('fresh') === '1';
+    const filters = {
+      product: url.searchParams.get('product') || '',
+      niche: url.searchParams.get('niche') || '',
+      traffic: url.searchParams.get('traffic') || '',
+      pote: url.searchParams.get('pote') || '',
+    };
     try {
-      const data = await getDashboard(range, { source, fresh });
+      const data = await getDashboard(range, filters, { source, fresh });
       return json(res, 200, data);
     } catch (err) {
       return json(res, 502, { error: String(err.message || err), source });
@@ -111,7 +117,7 @@ export const server = http.createServer(async (req, res) => {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   server.listen(config.port, config.host, () => {
-    console.log(`Jarvis Mobile em http://${config.host}:${config.port}  (fonte: ${config.dataSource}${config.appToken ? ', com token' : ''})`);
+    console.log(`Jarvis AOV em http://${config.host}:${config.port}  (fonte: ${config.dataSource}${config.appToken ? ', com token' : ''})`);
   });
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, async () => { await closeMcp(); server.close(); process.exit(0); });

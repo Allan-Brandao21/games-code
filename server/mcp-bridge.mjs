@@ -1,11 +1,12 @@
 // Bridge para o server MCP "pagamerican-data": sobe o processo via stdio
 // (igual ao `claude mcp add pagamerican-data -- node .../server.js`), lista os
-// tools e chama o que devolve o resumo do dashboard.
+// tools, busca os pedidos do período e agrega em métricas de AOV.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { config } from './env.mjs';
 import { resolveRange } from './range.mjs';
-import { normalizeLoose } from './normalize.mjs';
+import { normalizeOrders } from './normalize.mjs';
+import { aggregate } from './aov.mjs';
 
 let clientPromise = null;
 let toolsCache = { at: 0, tools: [] };
@@ -25,16 +26,14 @@ async function connect() {
     stderr: 'pipe',
   });
   transport.stderr?.on('data', (d) => process.stderr.write(`[mcp] ${d}`));
-  const client = new Client({ name: 'jarvis-mobile', version: '0.1.0' });
+  const client = new Client({ name: 'jarvis-aov-mobile', version: '0.2.0' });
   client.onclose = () => { clientPromise = null; toolsCache = { at: 0, tools: [] }; };
   await client.connect(transport);
   return client;
 }
 
 export async function getClient() {
-  if (!clientPromise) {
-    clientPromise = connect().catch((err) => { clientPromise = null; throw err; });
-  }
+  if (!clientPromise) clientPromise = connect().catch((err) => { clientPromise = null; throw err; });
   return clientPromise;
 }
 
@@ -52,12 +51,10 @@ export async function callTool(name, args = {}) {
   return unwrap(res);
 }
 
-// Respostas MCP vêm como content[] (text/json). Extrai o primeiro JSON válido.
 function unwrap(res) {
   if (res?.structuredContent) return res.structuredContent;
-  const parts = res?.content || [];
   const texts = [];
-  for (const c of parts) {
+  for (const c of res?.content || []) {
     if (c.type === 'text') {
       texts.push(c.text);
       try { return JSON.parse(c.text); } catch { /* segue */ }
@@ -70,40 +67,59 @@ function unwrap(res) {
   return { text: texts.join('\n') };
 }
 
-const DASH_HINT = /dashboard|summary|resumo|overview|metrics|metricas|kpi|stats/i;
+const ORDERS_HINT = /order|pedido|transaction|transacao|transação|sale|venda|purchase/i;
 
-export async function pickDashboardTool() {
+export async function pickOrdersTool() {
   const tools = await listTools();
-  if (config.mcp.dashboardTool) {
-    const t = tools.find((x) => x.name === config.mcp.dashboardTool);
-    if (!t) throw new Error(`tool "${config.mcp.dashboardTool}" não existe. Disponíveis: ${tools.map((x) => x.name).join(', ')}`);
+  if (config.mcp.ordersTool) {
+    const t = tools.find((x) => x.name === config.mcp.ordersTool);
+    if (!t) throw new Error(`tool "${config.mcp.ordersTool}" não existe. Disponíveis: ${tools.map((x) => x.name).join(', ')}`);
     return t;
   }
-  const t = tools.find((x) => DASH_HINT.test(x.name) || DASH_HINT.test(x.description || ''));
-  if (!t) {
-    throw new Error(`nenhum tool parece ser o dashboard. Defina PAGAMERICAN_MCP_DASHBOARD_TOOL. Disponíveis: ${tools.map((x) => x.name).join(', ')}`);
-  }
+  const t = tools.find((x) => ORDERS_HINT.test(x.name)) || tools.find((x) => ORDERS_HINT.test(x.description || ''));
+  if (!t) throw new Error(`nenhum tool parece listar pedidos. Defina PAGAMERICAN_MCP_ORDERS_TOOL. Disponíveis: ${tools.map((x) => x.name).join(', ')}`);
   return t;
 }
 
-function buildArgs(tool, range) {
+function buildArgs(tool, from, to, extra = {}) {
   const props = tool.inputSchema?.properties || {};
   const args = {};
-  const set = (candidates, value) => {
-    for (const c of candidates) if (props[c] !== undefined) { args[c] = value; return true; }
-    return false;
-  };
-  if (!set([config.mcp.fromArg, 'from', 'start', 'start_date', 'startDate', 'date_from', 'since'], range.from)) args[config.mcp.fromArg] = range.from;
-  if (!set([config.mcp.toArg, 'to', 'end', 'end_date', 'endDate', 'date_to', 'until'], range.to)) args[config.mcp.toArg] = range.to;
-  set(['period', 'range'], range.key);
+  const set = (cands, value) => { for (const c of cands) if (props[c] !== undefined) { args[c] = value; return true; } return false; };
+  if (!set([config.mcp.fromArg, 'from', 'start', 'start_date', 'startDate', 'date_from', 'since', 'data_inicio'], from)) args[config.mcp.fromArg] = from;
+  if (!set([config.mcp.toArg, 'to', 'end', 'end_date', 'endDate', 'date_to', 'until', 'data_fim'], to)) args[config.mcp.toArg] = to;
+  set(['limit', 'per_page', 'page_size', 'pageSize'], config.mcp.pageSize);
+  for (const [k, v] of Object.entries(extra)) if (props[k] !== undefined) args[k] = v;
   return args;
 }
 
-export async function mcpDashboard(rangeKey) {
+// Pagina enquanto o tool devolver next_cursor / next_page / has_more.
+async function fetchAllOrders(tool, from, to) {
+  const all = [];
+  let cursor;
+  let page = 1;
+  for (let i = 0; i < config.mcp.maxPages; i++) {
+    const extra = cursor ? { cursor, next_cursor: cursor, page_token: cursor } : { page, offset: all.length };
+    const raw = await callTool(tool.name, buildArgs(tool, from, to, extra));
+    const batch = normalizeOrders(raw);
+    all.push(...batch);
+    const next = raw?.next_cursor ?? raw?.nextCursor ?? raw?.cursor?.next ?? raw?.pagination?.next_cursor;
+    const hasMore = raw?.has_more ?? raw?.hasMore ?? raw?.pagination?.has_more ?? Boolean(next);
+    if (!batch.length || !hasMore) break;
+    cursor = next || undefined;
+    page += 1;
+    if (!cursor && !(tool.inputSchema?.properties?.page || tool.inputSchema?.properties?.offset)) break;
+  }
+  return all;
+}
+
+export async function mcpDashboard(rangeKey, filters = {}) {
   const range = resolveRange(rangeKey);
-  const tool = await pickDashboardTool();
-  const raw = await callTool(tool.name, buildArgs(tool, range));
-  const data = normalizeLoose(raw, { source: 'mcp', range });
+  const tool = await pickOrdersTool();
+  const [orders, prevOrders] = await Promise.all([
+    fetchAllOrders(tool, range.from, range.to),
+    config.mcp.comparePrevious ? fetchAllOrders(tool, range.prevFrom, range.prevTo) : [],
+  ]);
+  const data = aggregate({ orders, prevOrders, range, filters, source: 'mcp' });
   data.tool = tool.name;
   return data;
 }

@@ -1,7 +1,7 @@
 // Service worker: cacheia o shell do app; dados da API sempre vão à rede
 // (com fallback ao último dashboard salvo quando offline).
-const SHELL = 'jarvis-shell-v1';
-const DATA = 'jarvis-data-v1';
+const SHELL = 'jarvis-shell-v2';
+const DATA = 'jarvis-data-v2';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', (e) => {

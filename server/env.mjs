@@ -33,12 +33,15 @@ export const config = {
   apiKey: process.env.PAGAMERICAN_API_KEY || '',
   mcp: {
     server: process.env.PAGAMERICAN_MCP_SERVER || '',
-    dashboardTool: process.env.PAGAMERICAN_MCP_DASHBOARD_TOOL || '',
+    ordersTool: process.env.PAGAMERICAN_MCP_ORDERS_TOOL || '',
     fromArg: process.env.PAGAMERICAN_MCP_FROM_ARG || 'from',
     toArg: process.env.PAGAMERICAN_MCP_TO_ARG || 'to',
+    pageSize: Number(process.env.PAGAMERICAN_MCP_PAGE_SIZE || 500),
+    maxPages: Number(process.env.PAGAMERICAN_MCP_MAX_PAGES || 40),
+    comparePrevious: process.env.PAGAMERICAN_MCP_COMPARE_PREVIOUS !== '0',
   },
   rest: {
     baseUrl: process.env.PAGAMERICAN_API_URL || 'https://api.pagamerican.com',
-    dashboardPath: process.env.PAGAMERICAN_DASHBOARD_PATH || '/v1/dashboard',
+    ordersPath: process.env.PAGAMERICAN_ORDERS_PATH || '/v1/orders',
   },
 };

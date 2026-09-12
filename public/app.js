@@ -1,35 +1,34 @@
-// Jarvis Mobile — lógica do app (sem dependências).
+// Jarvis AOV — lógica do app (sem dependências).
 const CURRENCY = 'USD';
 const LOCALE = 'pt-BR';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
+const saved = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const save = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignora */ } };
+
 const state = {
-  range: localStorage.getItem('jm.range') || '7d',
-  view: localStorage.getItem('jm.view') || 'overview',
+  range: saved('jm.range', '7d'),
+  view: saved('jm.view', 'overview'),
+  filters: { product: saved('jm.f.product', ''), traffic: saved('jm.f.traffic', ''), pote: saved('jm.f.pote', '') },
   txFilter: 'all',
   data: null,
-  health: null,
 };
 
 const money = new Intl.NumberFormat(LOCALE, { style: 'currency', currency: CURRENCY, maximumFractionDigits: 0 });
 const money2 = new Intl.NumberFormat(LOCALE, { style: 'currency', currency: CURRENCY, maximumFractionDigits: 2 });
-const moneyCompact = new Intl.NumberFormat(LOCALE, { style: "currency", currency: CURRENCY, notation: "compact", maximumFractionDigits: 1 });
+const moneyCompact = new Intl.NumberFormat(LOCALE, { style: 'currency', currency: CURRENCY, notation: 'compact', maximumFractionDigits: 1 });
 const int = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 0 });
 const fmtMoney = (v) => (Math.abs(v) >= 100_000 ? moneyCompact.format(v) : money.format(v));
 const fmtPct = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v) ? '—' : `${v.toFixed(d).replace('.', ',')}%`);
 const fmtTime = (iso) => {
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso || '';
-  return d.toLocaleString(LOCALE, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return Number.isNaN(d.getTime()) ? iso || '' : d.toLocaleString(LOCALE, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 };
-const fmtDay = (iso) => {
-  const [y, m, d] = iso.split('-');
-  return `${d}/${m}`;
-};
+const fmtDay = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-const STATUS_LABEL = { approved: 'Aprovada', declined: 'Recusada', refunded: 'Refund', chargeback: 'Chargeback', pending: 'Pendente', unknown: '—' };
+const STEP_LABEL = { front: 'Front', bump: 'Bump', us1: 'US1', us2: 'US2', us3: 'US3', ds1: 'DS1' };
+const STATUS_LABEL = { approved: 'Aprovado', declined: 'Recusado', refunded: 'Refund', chargeback: 'Chargeback', pending: 'Pendente' };
 
 // ---------- rede ----------
 async function api(path, opts) {
@@ -39,29 +38,38 @@ async function api(path, opts) {
   return body;
 }
 
-async function loadHealth() {
-  try { state.health = await api('/api/health'); } catch { state.health = null; }
+function query({ fresh = false } = {}) {
+  const q = new URLSearchParams({ range: state.range });
+  for (const [k, v] of Object.entries(state.filters)) if (v) q.set(k, v);
+  if (fresh) q.set('fresh', '1');
+  return q.toString();
 }
 
+let reqSeq = 0;
 async function loadDashboard({ fresh = false } = {}) {
   const btn = $('#refreshBtn');
+  const seq = ++reqSeq;
   btn.classList.add('spin');
-  renderSkeleton();
+  $('#main').classList.add('loading');
+  if (!state.data) renderSkeleton();
   try {
-    state.data = await api(`/api/dashboard?range=${state.range}${fresh ? '&fresh=1' : ''}`);
-    setStatus(state.data.source, null);
+    const data = await api(`/api/dashboard?${query({ fresh })}`);
+    if (seq !== reqSeq) return; // chegou uma resposta mais nova
+    state.data = data;
+    setStatus(data.source, null);
     render();
     hideState();
   } catch (err) {
+    if (seq !== reqSeq) return;
     setStatus('error', err.message);
     showState(`Erro ao carregar: ${err.message}`, true);
     if (!state.data) renderEmpty();
   } finally {
-    btn.classList.remove('spin');
+    if (seq === reqSeq) { btn.classList.remove('spin'); $('#main').classList.remove('loading'); }
   }
 }
 
-// ---------- status / toasts ----------
+// ---------- status ----------
 function setStatus(source, err) {
   const dot = $('#statusDot');
   const badge = $('#sourceBadge');
@@ -72,156 +80,245 @@ function setStatus(source, err) {
 let stateTimer;
 function showState(msg, isError = false) {
   const el = $('#state');
-  el.textContent = msg;
-  el.hidden = false;
-  el.classList.toggle('error', isError);
+  el.textContent = msg; el.hidden = false; el.classList.toggle('error', isError);
   clearTimeout(stateTimer);
   if (!isError) stateTimer = setTimeout(hideState, 3000);
 }
 function hideState() { $('#state').hidden = true; }
 
-// ---------- render ----------
-function deltaHtml(v, { invert = false } = {}) {
+// ---------- helpers de render ----------
+function deltaHtml(v, { invert = false, suffix = '' } = {}) {
   if (v === null || v === undefined || !Number.isFinite(v)) return '<span class="delta flat">—</span>';
   const up = v > 0.05, down = v < -0.05;
   const cls = !up && !down ? 'flat' : invert ? (up ? 'bad-up' : 'good-down') : (up ? 'up' : 'down');
   const arrow = up ? '▲' : down ? '▼' : '•';
-  return `<span class="delta ${cls}" title="vs período anterior">${arrow} ${fmtPct(Math.abs(v))}</span>`;
+  return `<span class="delta ${cls}" title="vs período anterior">${arrow} ${fmtPct(Math.abs(v))}${suffix}</span>`;
 }
-
 function kpiTile({ label, value, delta, sub, wide = false, invert = false }) {
-  return `<div class="kpi${wide ? ' wide' : ''}">
-    <div class="label">${esc(label)}</div>
-    <div class="value">${esc(value)}</div>
-    <div class="sub">${delta !== undefined ? deltaHtml(delta, { invert }) : ''}${sub ? `<span>${esc(sub)}</span>` : ''}</div>
-  </div>`;
+  return `<div class="kpi${wide ? ' wide' : ''}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div>
+    <div class="sub">${delta !== undefined ? deltaHtml(delta, { invert }) : ''}${sub ? `<span>${esc(sub)}</span>` : ''}</div></div>`;
 }
-
 function renderSkeleton() {
-  if (state.data) return;
-  $('#kpis').innerHTML = [1, 2, 3, 4, 5].map((i) => `<div class="kpi${i === 1 ? ' wide' : ''}"><div class="label skeleton">carregando</div><div class="value skeleton">0000</div></div>`).join('');
+  $('#hero').innerHTML = '<div class="label skeleton">AOV</div><div class="value skeleton">US$ 000,00</div>';
+  $('#kpis').innerHTML = [1, 2, 3, 4].map(() => '<div class="kpi"><div class="label skeleton">carregando</div><div class="value skeleton">0000</div></div>').join('');
 }
-
 function renderEmpty() {
-  $('#kpis').innerHTML = kpiTile({ label: 'Sem dados', value: '—', sub: 'verifique a fonte em .env', wide: true });
-  $('#chart').innerHTML = '';
+  $('#hero').innerHTML = '<div class="label">Sem dados</div><div class="value">—</div><div class="row">verifique a fonte em .env</div>';
+  $('#kpis').innerHTML = '';
+  $('#chartDaily').innerHTML = ''; $('#chartHourly').innerHTML = '';
 }
+function periodLabel(r) { return r.from === r.to ? fmtDay(r.from) : `${fmtDay(r.from)} – ${fmtDay(r.to)}`; }
 
+// ---------- render principal ----------
 function render() {
   const d = state.data;
   if (!d) return;
   const k = d.kpis;
+  syncFilterOptions(d);
+
+  $('#hero').innerHTML = `
+    <div class="label">AOV · ${esc(periodLabel(d.range))}${filterLabel(d)}</div>
+    <div class="value">${money2.format(k.aov)}</div>
+    <div class="row">${deltaHtml(d.deltas.aov)}<span>${int.format(k.orders)} pedidos · ${fmtMoney(k.revenue)}</span></div>
+    <div class="split">
+      <div><div class="k">AOV só front</div><div class="v">${money2.format(k.aovFront)}<small>${d.deltas.aovFront === null ? '' : deltaHtml(d.deltas.aovFront)}</small></div></div>
+      <div><div class="k">Uplift por pedido</div><div class="v">+${money2.format(k.upliftPerOrder)}<small>${fmtPct(k.aovFront ? (k.upliftPerOrder / k.aovFront) * 100 : null, 0)} sobre o front</small></div></div>
+    </div>`;
+
+  const tr = k.takeRates;
   $('#kpis').innerHTML = [
-    kpiTile({ label: 'Receita', value: fmtMoney(k.revenue), delta: d.deltas.revenue, sub: `${d.range.from === d.range.to ? fmtDay(d.range.from) : `${fmtDay(d.range.from)} – ${fmtDay(d.range.to)}`}`, wide: true }),
+    kpiTile({ label: 'Take rate Upsell 1', value: fmtPct(tr.us1), delta: d.deltas.us1 }),
+    kpiTile({ label: 'Take rate Bump', value: fmtPct(tr.bump), delta: d.deltas.bump }),
+    kpiTile({ label: 'Upsell 2 · 3', value: `${fmtPct(tr.us2)} · ${fmtPct(tr.us3)}`, sub: 'sobre pedidos front' }),
+    kpiTile({ label: 'Downsell 1', value: fmtPct(tr.ds1), sub: 'sobre pedidos front' }),
     kpiTile({ label: 'Pedidos', value: int.format(k.orders), delta: d.deltas.orders }),
-    kpiTile({ label: 'Ticket médio', value: money2.format(k.aov), delta: d.deltas.aov }),
-    kpiTile({ label: 'Aprovação', value: fmtPct(k.approvalRate), delta: d.deltas.approvalRate }),
-    kpiTile({ label: 'Take rate upsell', value: fmtPct(k.upsellTakeRate) }),
+    kpiTile({ label: 'Refund', value: fmtPct(k.refundRate), sub: `${int.format(k.refunds)} refunds · ${int.format(k.chargebacks)} CB` }),
   ].join('');
 
-  $('#seriesRange').textContent = d.series.length ? `${d.series.length} dia${d.series.length > 1 ? 's' : ''}` : '';
-  renderChart(d.series);
+  $('#seriesRange').textContent = `${d.series.length} dia${d.series.length > 1 ? 's' : ''} · média ${money.format(k.aov)}`;
+  $('#hourlyNote').textContent = `Brasília · linha = média ${money.format(k.aov)}`;
+  renderLine($('#chartDaily'), d.series.map((p) => ({ x: fmtDay(p.date), y: p.aov, tip: `${fmtDay(p.date)}<br><b>${money2.format(p.aov)}</b> · ${int.format(p.orders)} pedidos` })), k.aov);
+  renderBars($('#chartHourly'), d.hourly.map((p) => ({ x: `${String(p.hour).padStart(2, '0')}h`, y: p.aov, tip: `${String(p.hour).padStart(2, '0')}h–${String((p.hour + 1) % 24).padStart(2, '0')}h<br><b>${money2.format(p.aov)}</b> · ${int.format(p.orders)} pedidos` })), { labelEvery: 3, avg: k.aov });
 
-  const refundRate = k.orders ? (k.refunds / k.orders) * 100 : null;
-  const cbRate = k.orders ? (k.chargebacks / k.orders) * 100 : null;
-  $('#health').innerHTML = [
-    stat('Refunds', int.format(k.refunds), `${fmtPct(refundRate)} · ${fmtMoney(k.refundAmount)}`, refundRate > 5 ? 'crit' : refundRate > 3 ? 'warn' : ''),
-    stat('Chargebacks', int.format(k.chargebacks), `${fmtPct(cbRate, 2)} · ${fmtMoney(k.chargebackAmount)}`, cbRate > 1 ? 'crit' : cbRate > 0.5 ? 'warn' : ''),
-    stat('Líquido', fmtMoney(k.revenue - k.refundAmount - k.chargebackAmount), 'receita − refund − CB'),
-  ].join('');
+  const max = Math.max(...d.steps.map((s) => s.revenue), 1);
+  $('#funnel').innerHTML = d.steps.map((s) => `<li class="${s.key}">
+    <div><div class="name">${esc(s.label)}</div><div class="meta">${int.format(s.count)} · ticket ${money.format(s.avgTicket)} · ${fmtMoney(s.revenue)}</div></div>
+    <div class="rate">${s.key === 'front' ? '100%' : fmtPct(s.takeRate)}<small>${fmtPct(s.share, 0)} da receita</small></div>
+    <div class="bar-bg"><div class="bar-fg" style="width:${(s.revenue / max) * 100}%"></div></div></li>`).join('');
 
-  $('#topProducts').innerHTML = rankedList(d.products.slice(0, 3), k.revenue, true);
-  $('#products').innerHTML = rankedList(d.products, k.revenue, true) || '<li class="muted">Sem dados de produto</li>';
-  $('#productsCount').textContent = d.products.length ? `${d.products.length} itens` : '';
-  $('#affiliates').innerHTML = rankedList(d.affiliates, k.revenue, false) || '<li class="muted">Sem dados de afiliado</li>';
-  $('#affiliatesCount').textContent = d.affiliates.length ? `${d.affiliates.length} itens` : '';
+  $('#products').innerHTML = rankedAov(d.products, (p) => p.niche) || '<li class="muted">Sem dados</li>';
+  $('#productsCount').textContent = d.products.length ? `${d.products.length} produtos` : '';
+  $('#nichesCard').hidden = !d.niches.length || (d.niches.length === 1 && !d.niches[0].name);
+  $('#niches').innerHTML = rankedAov(d.niches);
+  $('#potes').innerHTML = d.potes.map((p, i) => `<li>
+    <span class="rank">${i + 1}</span>
+    <div><div class="name">${p.units} ${p.units === 1 ? 'pote' : 'potes'}</div><div class="meta">${int.format(p.orders)} pedidos · US1 ${fmtPct(p.us1Rate)}</div></div>
+    <div><div class="amt">${money2.format(p.aov)}</div><div class="share">${fmtPct(p.share, 0)} do mix</div></div>
+    <div class="bar-bg"><div class="bar-fg" style="width:${p.share}%"></div></div></li>`).join('') || '<li class="muted">Sem dados</li>';
+
+  $('#traffic').innerHTML = d.traffic.map((t) => `<div class="box"><div class="k">${esc(t.label)}</div><div class="v">${money2.format(t.aov)}</div>
+    <div class="s"><b>${int.format(t.orders)}</b> pedidos · ${fmtPct(t.share, 0)}</div><div class="s">US1 <b>${fmtPct(t.us1Rate)}</b> · ${fmtMoney(t.revenue)}</div></div>`).join('');
+  $('#affiliates').innerHTML = rankedAov(d.affiliates) || '<li class="muted">Sem dados</li>';
+  $('#affiliatesCount').textContent = d.affiliates.length ? `${d.affiliates.length} afiliados` : '';
   renderTx();
 }
 
-function stat(label, value, sub, cls = '') {
-  return `<div class="stat ${cls}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div></div>`;
+function filterLabel(d) {
+  const parts = [];
+  if (d.filters.product) parts.push(d.filters.product);
+  if (d.filters.traffic) parts.push(d.filters.traffic === 'internal' ? 'interno' : 'afiliados');
+  if (d.filters.pote) parts.push(`${d.filters.pote} pote${d.filters.pote > 1 ? 's' : ''}`);
+  return parts.length ? ` · ${esc(parts.join(' · '))}` : '';
 }
 
-function rankedList(items, total, showRefund) {
+function rankedAov(items, subFn) {
   const max = Math.max(...items.map((i) => i.revenue), 1);
   return items.map((it, i) => `<li>
     <span class="rank">${i + 1}</span>
-    <div><div class="name">${esc(it.name)}</div><div class="meta">${int.format(it.orders)} pedidos${showRefund && it.refundRate !== null && it.refundRate !== undefined ? ` · refund ${fmtPct(it.refundRate)}` : ''}</div></div>
-    <div><div class="amt">${fmtMoney(it.revenue)}</div><div class="share">${total ? fmtPct((it.revenue / total) * 100, 0) : ''}</div></div>
-    <div class="bar-bg"><div class="bar-fg" style="width:${(it.revenue / max) * 100}%"></div></div>
-  </li>`).join('');
+    <div><div class="name">${esc(it.name)}</div><div class="meta">${subFn && subFn(it) ? `${esc(subFn(it))} · ` : ''}${int.format(it.orders)} pedidos · US1 ${fmtPct(it.us1Rate)}</div></div>
+    <div><div class="amt">${money2.format(it.aov)}</div><div class="sub2">${fmtMoney(it.revenue)}</div></div>
+    <div class="bar-bg"><div class="bar-fg" style="width:${(it.revenue / max) * 100}%"></div></div></li>`).join('');
 }
 
 function renderTx() {
   const d = state.data;
   if (!d) return;
-  const list = state.txFilter === 'all' ? d.recent : d.recent.filter((t) => t.status === state.txFilter);
-  $('#tx').innerHTML = list.length
-    ? list.map((t) => `<li>
-        <div><div class="name">${esc(t.product)}</div><div class="meta">${esc(fmtTime(t.time))}${t.affiliate ? ` · ${esc(t.affiliate)}` : ''}${t.id ? ` · ${esc(t.id)}` : ''}</div></div>
-        <div><div class="amt">${money2.format(t.amount)}</div><span class="status ${esc(t.status)}">${esc(STATUS_LABEL[t.status] || t.status)}</span></div>
-      </li>`).join('')
-    : '<li class="muted">Nenhuma transação neste filtro</li>';
+  const f = state.txFilter;
+  const list = d.recent.filter((t) => f === 'all' || (f === 'us1' && t.steps.includes('us1')) || (f === 'front' && t.steps.length === 1) || (f === 'refunded' && ['refunded', 'chargeback'].includes(t.status)));
+  $('#tx').innerHTML = list.length ? list.map((t) => `<li>
+      <div><div class="name">${esc(t.product)} <span class="muted">· ${t.units} ${t.units === 1 ? 'pote' : 'potes'}</span></div>
+        <div class="meta">${esc(fmtTime(t.time))} · ${esc(t.affiliate)}${t.id ? ` · ${esc(t.id)}` : ''}</div>
+        <div class="steps">${t.steps.map((s) => `<span class="${esc(s)}">${esc(STEP_LABEL[s] || s)}</span>`).join('')}${t.status !== 'approved' ? `<span class="status ${esc(t.status)}">${esc(STATUS_LABEL[t.status] || t.status)}</span>` : ''}</div></div>
+      <div class="amt">${money2.format(t.amount)}</div></li>`).join('')
+    : '<li class="muted">Nenhum pedido neste filtro</li>';
 }
 
-// ---------- gráfico (SVG inline, barras, 1 série) ----------
-function renderChart(series) {
-  const host = $('#chart');
+// ---------- filtros ----------
+function syncFilterOptions(d) {
+  const fill = (sel, values, fmt) => {
+    const cur = sel.value;
+    const keep = sel.options[0].outerHTML;
+    sel.innerHTML = keep + values.map((v) => `<option value="${esc(v)}">${esc(fmt ? fmt(v) : v)}</option>`).join('');
+    sel.value = values.map(String).includes(String(cur)) ? cur : '';
+  };
+  fill($('#fProduct'), d.options.products);
+  fill($('#fPote'), d.options.potes, (v) => `${v} ${v === 1 ? 'pote' : 'potes'}`);
+  $('#fProduct').value = state.filters.product;
+  $('#fTraffic').value = state.filters.traffic;
+  $('#fPote').value = state.filters.pote;
+  for (const sel of $$('#filters select')) sel.classList.toggle('on', Boolean(sel.value));
+  $('#fClear').hidden = !Object.values(state.filters).some(Boolean);
+}
+$('#filters').addEventListener('change', (e) => {
+  const map = { fProduct: 'product', fTraffic: 'traffic', fPote: 'pote' };
+  const key = map[e.target.id];
+  if (!key) return;
+  state.filters[key] = e.target.value;
+  save(`jm.f.${key}`, e.target.value);
+  loadDashboard();
+});
+$('#fClear').addEventListener('click', () => {
+  state.filters = { product: '', traffic: '', pote: '' };
+  for (const k of Object.keys(state.filters)) save(`jm.f.${k}`, '');
+  loadDashboard();
+});
+
+// ---------- gráficos (SVG inline) ----------
+const tip = $('#tooltip');
+function showTip(e, html) {
+  tip.innerHTML = html; tip.hidden = false;
+  const pt = e.touches ? e.touches[0] : e;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = `${Math.min(Math.max(pt.clientX - tw / 2, 8), window.innerWidth - tw - 8)}px`;
+  tip.style.top = `${Math.max(pt.clientY - th - 18, 8)}px`;
+}
+function hideTip() { tip.hidden = true; }
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = 10 ** Math.floor(Math.log10(v));
+  const f = v / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+}
+function niceStep(range) {
+  const p = 10 ** Math.floor(Math.log10(range / 2 || 1));
+  const f = range / 2 / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+}
+function frame(host, points, { zeroBased = true, extra = [] } = {}) {
   const W = Math.max(host.clientWidth || 320, 240), H = host.clientHeight || 180;
-  if (!series.length) { host.innerHTML = `<svg viewBox="0 0 ${W} ${H}"><text class="empty" x="${W / 2}" y="${H / 2}">Sem série diária</text></svg>`; return; }
-  const max = Math.max(...series.map((p) => p.revenue), 1);
-  const nice = niceMax(max);
-  const ticks = [0, nice / 2, nice];
+  const ys = points.map((p) => p.y).filter((y) => y > 0).concat(extra.filter(Boolean));
+  let min = 0, max = niceMax(Math.max(...ys, 1) * 1.05), ticks;
+  if (zeroBased || ys.length < 2) {
+    ticks = [0, max / 2, max];
+  } else {
+    const lo = Math.min(...ys), hi = Math.max(...ys);
+    const step = niceStep(Math.max(hi - lo, hi * 0.1));
+    min = Math.max(0, Math.floor((lo - step * 0.3) / step) * step);
+    max = Math.ceil((hi + step * 0.3) / step) * step;
+    ticks = [min, (min + max) / 2, max];
+  }
   const labelW = Math.max(...ticks.map((t) => moneyCompact.format(t).length)) * 6.4 + 10;
-  const pad = { t: 8, r: 8, b: 22, l: Math.ceil(labelW) };
+  const pad = { t: 10, r: 10, b: 22, l: Math.ceil(labelW) };
   const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
-  const n = series.length;
-  const gap = 2;
-  const bw = Math.max((iw - gap * (n - 1)) / n, 2);
-  const y = (v) => pad.t + ih - (v / nice) * ih;
-  const labelEvery = n <= 8 ? 1 : n <= 16 ? 2 : Math.ceil(n / 6);
-  const r = Math.min(4, bw / 2);
-  const bars = series.map((p, i) => {
-    const x = pad.l + i * (bw + gap);
-    const top = y(p.revenue);
-    const h = Math.max(pad.t + ih - top, 0);
-    const path = h > r
-      ? `M${x},${pad.t + ih} V${top + r} a${r},${r} 0 0 1 ${r},-${r} H${x + bw - r} a${r},${r} 0 0 1 ${r},${r} V${pad.t + ih} Z`
-      : `M${x},${pad.t + ih} h${bw} v-${h} h-${bw} Z`;
-    return `<path class="bar" d="${path}"/><rect class="hit" data-i="${i}" x="${x - gap / 2}" y="${pad.t}" width="${bw + gap}" height="${ih}"/>`
-      + (i % labelEvery === 0 ? `<text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${fmtDay(p.date)}</text>` : '');
-  }).join('');
-  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Receita por dia">
-    <g class="grid">${ticks.map((t) => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}"/>`).join('')}</g>
+  const y = (v) => pad.t + ih - ((v - min) / (max - min)) * ih;
+  const axes = `<g class="grid">${ticks.map((t) => `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}"/>`).join('')}</g>
     ${ticks.map((t) => `<text class="ylab" x="${pad.l - 6}" y="${y(t) + 4}">${moneyCompact.format(t)}</text>`).join('')}
-    <line class="baseline" x1="${pad.l}" x2="${W - pad.r}" y1="${pad.t + ih}" y2="${pad.t + ih}"/>
-    ${bars}
+    <line class="baseline" x1="${pad.l}" x2="${W - pad.r}" y1="${pad.t + ih}" y2="${pad.t + ih}"/>`;
+  return { W, H, pad, iw, ih, y, axes };
+}
+function avgLine(f, avg) {
+  if (!avg) return '';
+  return `<line class="avg" x1="${f.pad.l}" x2="${f.W - f.pad.r}" y1="${f.y(avg)}" y2="${f.y(avg)}"/>`;
+}
+
+function renderLine(host, points, avg) {
+  if (!points.length) { host.innerHTML = ''; return; }
+  const f = frame(host, points, { zeroBased: false, extra: [avg] });
+  const n = points.length;
+  const x = (i) => f.pad.l + (n === 1 ? f.iw / 2 : (i / (n - 1)) * f.iw);
+  const valid = points.map((p, i) => ({ ...p, i })).filter((p) => p.y > 0);
+  const path = valid.map((p, j) => `${j ? 'L' : 'M'}${x(p.i)},${f.y(p.y)}`).join(' ');
+  const area = valid.length > 1 ? `${path} L${x(valid[valid.length - 1].i)},${f.pad.t + f.ih} L${x(valid[0].i)},${f.pad.t + f.ih} Z` : '';
+  const labelEvery = n <= 8 ? 1 : n <= 16 ? 2 : Math.ceil(n / 6);
+  host.innerHTML = `<svg viewBox="0 0 ${f.W} ${f.H}" role="img" aria-label="AOV por dia">${f.axes}${avgLine(f, avg)}
+    ${area ? `<path class="area" d="${area}"/>` : ''}<path class="line" d="${path}"/>
+    <line class="crosshair" id="xh" x1="0" x2="0" y1="${f.pad.t}" y2="${f.pad.t + f.ih}" visibility="hidden"/>
+    ${valid.map((p) => `<circle class="marker" data-i="${p.i}" cx="${x(p.i)}" cy="${f.y(p.y)}" r="${n > 20 ? 3 : 4}"/>`).join('')}
+    ${points.map((p, i) => (i % labelEvery === 0 ? `<text x="${x(i)}" y="${f.H - 6}" text-anchor="middle">${esc(p.x)}</text>` : '')).join('')}
+    ${points.map((p, i) => `<rect class="hit" data-i="${i}" x="${x(i) - f.iw / n / 2}" y="${f.pad.t}" width="${f.iw / n}" height="${f.ih}"/>`).join('')}
   </svg>`;
-  const tip = $('#tooltip');
-  const barsEls = $$('.bar', host);
+  wireHover(host, points, (i) => { $('#xh', host).setAttribute('x1', x(i)); $('#xh', host).setAttribute('x2', x(i)); $('#xh', host).setAttribute('visibility', 'visible'); },
+    () => $('#xh', host)?.setAttribute('visibility', 'hidden'), '.marker');
+}
+
+function renderBars(host, points, { labelEvery = 1, avg } = {}) {
+  if (!points.length) { host.innerHTML = ''; return; }
+  const f = frame(host, points);
+  const n = points.length, gap = 2;
+  const bw = Math.max((f.iw - gap * (n - 1)) / n, 2);
+  const r = Math.min(4, bw / 2);
+  host.innerHTML = `<svg viewBox="0 0 ${f.W} ${f.H}" role="img" aria-label="AOV por hora">${f.axes}${avgLine(f, avg)}
+    ${points.map((p, i) => {
+      const xx = f.pad.l + i * (bw + gap), top = f.y(p.y), h = Math.max(f.pad.t + f.ih - top, 0);
+      const d = h > r ? `M${xx},${f.pad.t + f.ih} V${top + r} a${r},${r} 0 0 1 ${r},-${r} H${xx + bw - r} a${r},${r} 0 0 1 ${r},${r} V${f.pad.t + f.ih} Z` : `M${xx},${f.pad.t + f.ih} h${bw} v-${h} h-${bw} Z`;
+      return `<path class="bar" data-i="${i}" d="${d}"/><rect class="hit" data-i="${i}" x="${xx - gap / 2}" y="${f.pad.t}" width="${bw + gap}" height="${f.ih}"/>` + (i % labelEvery === 0 ? `<text x="${xx + bw / 2}" y="${f.H - 6}" text-anchor="middle">${esc(p.x)}</text>` : '');
+    }).join('')}
+  </svg>`;
+  wireHover(host, points, null, null, '.bar');
+}
+
+function wireHover(host, points, onShow, onHide, markSel) {
+  const marks = $$(markSel, host);
   const show = (e) => {
     const i = Number(e.target.dataset.i);
     if (Number.isNaN(i)) return;
-    const p = series[i];
-    barsEls.forEach((b, j) => b.classList.toggle('dim', j !== i));
-    tip.innerHTML = `${fmtDay(p.date)}<br><b>${money.format(p.revenue)}</b> · ${int.format(p.orders)} pedidos`;
-    tip.hidden = false;
-    const pt = e.touches ? e.touches[0] : e;
-    const tw = tip.offsetWidth, th = tip.offsetHeight;
-    tip.style.left = `${Math.min(Math.max(pt.clientX - tw / 2, 8), window.innerWidth - tw - 8)}px`;
-    tip.style.top = `${Math.max(pt.clientY - th - 16, 8)}px`;
+    marks.forEach((m) => m.classList.toggle('dim', Number(m.dataset.i) !== i));
+    showTip(e, points[i].tip);
+    onShow?.(i);
   };
-  const hide = () => { tip.hidden = true; barsEls.forEach((b) => b.classList.remove('dim')); };
-  host.onpointermove = show;
-  host.onpointerdown = show;
-  host.onpointerleave = hide;
-  host.onpointerup = () => setTimeout(hide, 1200);
-}
-function niceMax(v) {
-  const p = 10 ** Math.floor(Math.log10(v));
-  const f = v / p;
-  const m = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
-  return m * p;
+  const hide = () => { hideTip(); marks.forEach((m) => m.classList.remove('dim')); onHide?.(); };
+  host.onpointermove = show; host.onpointerdown = show; host.onpointerleave = hide;
+  host.onpointerup = () => setTimeout(hide, 1500);
 }
 
 // ---------- explorar API (MCP) ----------
@@ -235,20 +332,16 @@ async function loadTools(fresh = false) {
       const props = t.inputSchema?.properties || {};
       const example = {};
       for (const [k, v] of Object.entries(props)) example[k] = v.default ?? (v.type === 'number' || v.type === 'integer' ? 0 : v.type === 'boolean' ? false : v.enum?.[0] ?? '');
-      return `<details class="tool" data-name="${esc(t.name)}">
-        <summary><span>${esc(t.name)}</span></summary>
+      return `<details class="tool" data-name="${esc(t.name)}"><summary><span>${esc(t.name)}</span></summary>
         <div class="desc">${esc(t.description || '')}</div>
         <textarea spellcheck="false">${esc(JSON.stringify(example, null, 2))}</textarea>
-        <button class="btn">Chamar</button>
-        <pre hidden></pre>
-      </details>`;
+        <button class="btn">Chamar</button><pre hidden></pre></details>`;
     }).join('');
   } catch (err) {
     host.innerHTML = `<p class="small" style="color:var(--critical)">${esc(err.message)}</p>
       <p class="muted small">Defina <code>DATA_SOURCE=mcp</code>, <code>PAGAMERICAN_MCP_SERVER</code> e <code>PAGAMERICAN_API_KEY</code> no <code>.env</code> do servidor.</p>`;
   }
 }
-
 $('#tools').addEventListener('click', async (e) => {
   const btn = e.target.closest('.btn');
   if (!btn) return;
@@ -260,46 +353,45 @@ $('#tools').addEventListener('click', async (e) => {
   try {
     const { result } = await api('/api/mcp/call', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: det.dataset.name, args }) });
     pre.hidden = false; pre.textContent = JSON.stringify(result, null, 2);
-  } catch (err) {
-    pre.hidden = false; pre.textContent = `Erro: ${err.message}`;
-  } finally { btn.disabled = false; btn.textContent = 'Chamar'; }
+  } catch (err) { pre.hidden = false; pre.textContent = `Erro: ${err.message}`; }
+  finally { btn.disabled = false; btn.textContent = 'Chamar'; }
 });
 
 // ---------- navegação ----------
 function setView(v) {
-  state.view = v;
-  localStorage.setItem('jm.view', v);
+  state.view = v; save('jm.view', v);
   $$('.view').forEach((s) => s.classList.toggle('active', s.dataset.view === v));
   $$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
-  $('#ranges').style.display = v === 'explore' ? 'none' : '';
+  const hide = v === 'explore';
+  $('#ranges').style.display = hide ? 'none' : '';
+  $('#filters').style.display = hide ? 'none' : '';
   window.scrollTo({ top: 0 });
   if (v === 'explore' && !$('#tools').children.length) loadTools();
+  if (v === 'overview' && state.data) render();
 }
 $('#tabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setView(b.dataset.view); });
-document.addEventListener('click', (e) => { const b = e.target.closest('[data-goto]'); if (b) setView(b.dataset.goto); });
 $('#ranges').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
-  state.range = b.dataset.range;
-  localStorage.setItem('jm.range', state.range);
+  state.range = b.dataset.range; save('jm.range', state.range);
   $$('#ranges button').forEach((x) => x.classList.toggle('active', x === b));
   loadDashboard();
 });
 $('#txFilters').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b) return;
-  state.txFilter = b.dataset.status;
+  state.txFilter = b.dataset.f;
   $$('#txFilters button').forEach((x) => x.classList.toggle('active', x === b));
   renderTx();
 });
 $('#refreshBtn').addEventListener('click', () => loadDashboard({ fresh: true }));
 $('#reloadTools').addEventListener('click', () => loadTools(true));
-window.addEventListener('resize', () => state.data && renderChart(state.data.series));
+window.addEventListener('resize', () => state.data && state.view === 'overview' && render());
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.data && Date.now() - new Date(state.data.generatedAt) > 120_000) loadDashboard(); });
 
 // ---------- boot ----------
 $$('#ranges button').forEach((x) => x.classList.toggle('active', x.dataset.range === state.range));
 setView(state.view);
-loadHealth().then(loadDashboard);
+loadDashboard();
 setInterval(() => { if (!document.hidden) loadDashboard(); }, 5 * 60_000);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

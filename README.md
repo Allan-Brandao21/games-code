@@ -1,16 +1,29 @@
-# Jarvis Mobile
+# Jarvis AOV — mobile
 
-Versão mobile (PWA) do dash **Jarvis**, alimentada pela API da **PagAmerican**
-através do server MCP `pagamerican-data` que eles liberaram.
+Dash de **AOV** (ticket médio) para o celular, alimentado pela API da
+**PagAmerican** através do server MCP `pagamerican-data`.
 
-- Abre no celular como app (Adicionar à tela inicial), tema escuro, navegação por abas.
-- KPIs: receita, pedidos, ticket médio, aprovação, take rate de upsell, refunds,
-  chargebacks e líquido, com variação vs. período anterior.
-- Gráfico de receita por dia, ranking de produtos e afiliados, últimas transações
-  com filtro por status.
-- Aba **API** lista os tools do server MCP e chama qualquer um direto do celular
-  (útil para descobrir o formato dos dados e ajustar o mapeamento).
-- Funciona offline com o último dashboard carregado.
+O app parte de **pedidos** (front + order bump + upsells + downsell) e calcula
+tudo no servidor, então a mesma tela serve para qualquer gateway que exponha
+pedidos com line items.
+
+## O que mostra
+
+- **AOV** do período com variação vs. período anterior, **AOV só front** e
+  **uplift por pedido** (quanto bump/upsells acrescentam sobre o front).
+- **Take rate** de Order bump, Upsell 1, Upsell 2, Upsell 3 e Downsell 1,
+  sempre sobre pedidos front.
+- **AOV por dia** (linha) e **AOV por hora** (barras, horário de Brasília).
+- **Funil de etapas**: pedidos, ticket, receita e participação de cada etapa.
+- **Por produto**, **por nicho**, **por pote** (mix 1/3/6 unidades), **por
+  afiliado** e **afiliados vs tráfego interno**, cada um com AOV, pedidos,
+  receita e take rate de Upsell 1.
+- **Últimos pedidos** com as etapas que cada um levou (Front · Bump · US1…).
+- **Filtros**: período (hoje, ontem, 7 dias, 30 dias, mês), produto, tráfego e pote.
+- Aba **API** lista os tools do server MCP e chama qualquer um direto do
+  celular, para inspecionar o formato real dos pedidos.
+- Abre como app (Adicionar à tela inicial) e funciona offline com o último
+  dashboard carregado.
 
 A chave da PagAmerican fica **só no servidor** (`.env`). O celular nunca a recebe.
 
@@ -31,9 +44,9 @@ gravar o cookie de acesso.
 
 | Valor  | O que faz |
 |--------|-----------|
-| `mock` | Dados de exemplo determinísticos. Padrão, para desenvolver sem a API. |
-| `mcp`  | Sobe o server MCP da PagAmerican via stdio (mesmo comando do `claude mcp add`) e chama o tool de dashboard. |
-| `rest` | Chama `PAGAMERICAN_API_URL + PAGAMERICAN_DASHBOARD_PATH` direto por HTTP, se a PagAmerican expuser. |
+| `mock` | Pedidos de exemplo determinísticos. Padrão, para desenvolver sem a API. |
+| `mcp`  | Sobe o server MCP da PagAmerican via stdio (mesmo comando do `claude mcp add`), busca os pedidos do período (com paginação) e agrega. |
+| `rest` | Busca pedidos em `PAGAMERICAN_API_URL + PAGAMERICAN_ORDERS_PATH` por HTTP, se a PagAmerican expuser. |
 
 ### Configurando o MCP
 
@@ -53,42 +66,56 @@ PAGAMERICAN_API_KEY=pag_your_key
 PAGAMERICAN_MCP_SERVER=/absolute/path/to/mcp/dist/server.js
 ```
 
-O bridge lista os tools e escolhe automaticamente o que tiver `dashboard`,
-`summary`, `metrics`, `overview` ou `kpi` no nome/descrição. Se errar, fixe com
-`PAGAMERICAN_MCP_DASHBOARD_TOOL=nome_do_tool`. Os argumentos de período são
-detectados pelo schema do tool (`from/to`, `start_date/end_date`, `since/until`…)
-ou fixados com `PAGAMERICAN_MCP_FROM_ARG` / `PAGAMERICAN_MCP_TO_ARG`.
+O bridge lista os tools e escolhe o que tiver `order`, `pedido`, `transaction`
+ou `sale` no nome. Se errar, fixe com `PAGAMERICAN_MCP_ORDERS_TOOL=nome_do_tool`.
+Os argumentos de período são detectados pelo schema do tool (`from/to`,
+`start_date/end_date`, `since/until`…) ou fixados com
+`PAGAMERICAN_MCP_FROM_ARG` / `PAGAMERICAN_MCP_TO_ARG`. Paginação por
+`page`/`offset`/`cursor` é seguida enquanto a resposta trouxer `has_more` ou
+`next_cursor`.
 
-## Contrato de dados
+## Como um pedido é lido
 
-Toda fonte é normalizada em `server/normalize.mjs` para o formato que o app usa:
+`server/normalize.mjs` converte cada registro da API em:
 
 ```jsonc
 {
-  "source": "mcp",
-  "range": { "key": "7d", "from": "2026-09-06", "to": "2026-09-12" },
-  "kpis": { "revenue": 0, "orders": 0, "aov": 0, "approvalRate": 0, "refunds": 0,
-            "refundAmount": 0, "chargebacks": 0, "chargebackAmount": 0, "upsellTakeRate": 0 },
-  "deltas": { "revenue": 0, "orders": 0, "aov": 0, "approvalRate": 0 },   // % vs período anterior
-  "series": [{ "date": "2026-09-06", "revenue": 0, "orders": 0 }],
-  "products": [{ "name": "", "revenue": 0, "orders": 0, "refundRate": 0 }],
-  "affiliates": [{ "name": "", "revenue": 0, "orders": 0 }],
-  "recent": [{ "id": "", "time": "", "product": "", "affiliate": "", "amount": 0, "status": "approved" }]
+  "id": "PAG-123", "time": "2026-09-12T15:00:00Z",
+  "product": "AlkaPic", "niche": "Disfunção Erétil",
+  "affiliate": "Gil Jardim", "traffic": "affiliates",   // ou "internal"
+  "units": 3,                                            // pote
+  "status": "approved",                                  // refunded | chargeback | declined | pending
+  "items": [{ "step": "front", "amount": 177 }, { "step": "us1", "amount": 147 }],
+  "total": 324
 }
 ```
 
-O normalizador aceita chaves em inglês e português (`revenue`/`receita`,
-`orders`/`pedidos`, `by_day`/`por_dia`, `transactions`/`transacoes`…). Se a
-resposta real da PagAmerican usar nomes diferentes, ajuste `KEY_ALIASES` e as
-listas de `firstArray` em `server/normalize.mjs`. A aba **API** do app mostra a
-resposta crua de cada tool para facilitar esse ajuste.
+Aceita chaves em inglês e português (`order_id`/`pedido_id`, `created_at`/`data`,
+`product_name`/`produto`, `affiliate_name`/`afiliado`, `is_house_traffic`,
+`quantity`/`potes`, `line_items`/`itens`…). A etapa de cada item é deduzida do
+nome/sku/tipo (`Upsell 1`, `OTO2`, `Order Bump`, `Downsell`…) e colunas achatadas
+como `upsell_1_amount` ou `bump_amount` também viram itens. Sem itens, o pedido
+conta como só front.
+
+Se a resposta real da PagAmerican usar outros nomes, ajuste `ALIASES`,
+`STEP_RULES` e `extractOrders` em `server/normalize.mjs`. A aba **API** mostra a
+resposta crua de cada tool para facilitar.
+
+## Métricas (`server/aov.mjs`)
+
+- **Pedidos** = pedidos com status diferente de recusado/pendente.
+- **AOV** = receita total (todas as etapas) ÷ pedidos.
+- **AOV só front** = receita do front ÷ pedidos. **Uplift** = AOV − AOV front.
+- **Take rate** da etapa = pedidos que levaram a etapa ÷ pedidos.
+- **AOV por hora** usa `HOUR_OFFSET` (padrão −3, Brasília).
+- Variações comparam com o período imediatamente anterior de mesmo tamanho.
 
 ## Endpoints do servidor
 
 | Rota | Descrição |
 |------|-----------|
 | `GET /api/health` | Fonte ativa e se o MCP está configurado. |
-| `GET /api/dashboard?range=today\|yesterday\|7d\|30d\|mtd&fresh=1` | Dashboard normalizado (cache de 60 s). |
+| `GET /api/dashboard?range=today\|yesterday\|7d\|30d\|mtd&product=&traffic=&pote=&fresh=1` | Dashboard agregado (cache de 60 s). |
 | `GET /api/mcp/tools` | Tools expostos pelo server MCP. |
 | `POST /api/mcp/call` `{ "name", "args" }` | Chama um tool e devolve o resultado. |
 
@@ -98,10 +125,11 @@ resposta crua de cada tool para facilitar esse ajuste.
 server/
   index.mjs        servidor HTTP + rotas /api
   datasource.mjs   escolhe mock | mcp | rest (com cache)
-  mcp-bridge.mjs   cliente MCP via stdio
+  mcp-bridge.mjs   cliente MCP via stdio, com paginação
   rest.mjs         cliente HTTP direto
-  mock.mjs         dados de exemplo
-  normalize.mjs    contrato de dados
+  mock.mjs         pedidos de exemplo
+  normalize.mjs    resposta da API -> pedidos
+  aov.mjs          pedidos -> métricas do dashboard
   range.mjs        períodos
 public/
   index.html, app.js, styles.css, sw.js, manifest.webmanifest, icon.svg

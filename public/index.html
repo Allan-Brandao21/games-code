@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0d0d0d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Jarvis">
-  <title>Jarvis Mobile</title>
+  <meta name="apple-mobile-web-app-title" content="Jarvis AOV">
+  <title>Jarvis AOV</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon.svg">
@@ -17,7 +17,7 @@
   <header class="top">
     <div class="brand">
       <span class="dot" id="statusDot" title="fonte de dados"></span>
-      <h1>Jarvis</h1>
+      <h1>Jarvis <span class="thin">AOV</span></h1>
       <span class="badge" id="sourceBadge">…</span>
     </div>
     <button class="icon-btn" id="refreshBtn" aria-label="Atualizar">
@@ -33,43 +33,50 @@
     <button data-range="mtd">Mês</button>
   </nav>
 
+  <div class="filters-row" id="filters">
+    <label><span>Produto</span><select id="fProduct"><option value="">Todos</option></select></label>
+    <label><span>Tráfego</span><select id="fTraffic"><option value="">Todos</option><option value="affiliates">Afiliados</option><option value="internal">Interno</option></select></label>
+    <label><span>Pote</span><select id="fPote"><option value="">Todos</option></select></label>
+    <button class="clear" id="fClear" hidden>limpar</button>
+  </div>
+
   <main id="main">
     <section class="view active" data-view="overview">
+      <div class="hero" id="hero"></div>
       <div class="kpis" id="kpis"></div>
       <div class="card">
-        <div class="card-head">
-          <h2>Receita por dia</h2>
-          <span class="muted" id="seriesRange"></span>
-        </div>
-        <div class="chart" id="chart"></div>
+        <div class="card-head"><h2>AOV por dia</h2><span class="muted" id="seriesRange"></span></div>
+        <div class="chart" id="chartDaily"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Saúde</h2></div>
-        <div class="health" id="health"></div>
+        <div class="card-head"><h2>AOV por hora</h2><span class="muted" id="hourlyNote">horário de Brasília</span></div>
+        <div class="chart short" id="chartHourly"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>Top produtos</h2><button class="link" data-goto="products">ver todos</button></div>
-        <ol class="ranked" id="topProducts"></ol>
+        <div class="card-head"><h2>Funil de etapas</h2><span class="muted">take rate · receita</span></div>
+        <ol class="funnel" id="funnel"></ol>
       </div>
     </section>
 
     <section class="view" data-view="products">
-      <div class="card"><div class="card-head"><h2>Produtos</h2><span class="muted" id="productsCount"></span></div><ol class="ranked" id="products"></ol></div>
+      <div class="card"><div class="card-head"><h2>Por produto</h2><span class="muted" id="productsCount"></span></div><ol class="ranked" id="products"></ol></div>
+      <div class="card" id="nichesCard"><div class="card-head"><h2>Por nicho</h2></div><ol class="ranked" id="niches"></ol></div>
+      <div class="card"><div class="card-head"><h2>Por pote</h2><span class="muted">mix de unidades no front</span></div><ol class="ranked" id="potes"></ol></div>
     </section>
 
     <section class="view" data-view="affiliates">
-      <div class="card"><div class="card-head"><h2>Afiliados</h2><span class="muted" id="affiliatesCount"></span></div><ol class="ranked" id="affiliates"></ol></div>
+      <div class="card"><div class="card-head"><h2>Tráfego</h2><span class="muted">afiliados vs interno</span></div><div class="compare" id="traffic"></div></div>
+      <div class="card"><div class="card-head"><h2>Por afiliado</h2><span class="muted" id="affiliatesCount"></span></div><ol class="ranked" id="affiliates"></ol></div>
     </section>
 
-    <section class="view" data-view="transactions">
+    <section class="view" data-view="orders">
       <div class="card">
-        <div class="card-head"><h2>Últimas transações</h2></div>
+        <div class="card-head"><h2>Últimos pedidos</h2></div>
         <div class="filters" id="txFilters">
-          <button data-status="all" class="active">Todas</button>
-          <button data-status="approved">Aprovadas</button>
-          <button data-status="declined">Recusadas</button>
-          <button data-status="refunded">Refund</button>
-          <button data-status="chargeback">CB</button>
+          <button data-f="all" class="active">Todos</button>
+          <button data-f="us1">Com upsell</button>
+          <button data-f="front">Só front</button>
+          <button data-f="refunded">Refund</button>
         </div>
         <ul class="tx" id="tx"></ul>
       </div>
@@ -78,7 +85,7 @@
     <section class="view" data-view="explore">
       <div class="card">
         <div class="card-head"><h2>API PagAmerican (MCP)</h2><button class="link" id="reloadTools">recarregar</button></div>
-        <p class="muted small">Lista os tools do server <code>pagamerican-data</code> e permite chamar qualquer um direto do celular. Use para descobrir o formato dos dados e ajustar o mapeamento.</p>
+        <p class="muted small">Lista os tools do server <code>pagamerican-data</code> e chama qualquer um direto do celular. Use para ver o formato dos pedidos e ajustar o mapeamento.</p>
         <div id="tools"></div>
       </div>
     </section>
@@ -87,10 +94,10 @@
   </main>
 
   <nav class="tabs" id="tabs">
-    <button data-view="overview" class="active"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg><span>Visão</span></button>
+    <button data-view="overview" class="active"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg><span>AOV</span></button>
     <button data-view="products"><svg viewBox="0 0 24 24"><path d="M20 6h-3V4a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zM9 4h6v2H9z"/></svg><span>Produtos</span></button>
     <button data-view="affiliates"><svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg><span>Afiliados</span></button>
-    <button data-view="transactions"><svg viewBox="0 0 24 24"><path d="M3 5h18v2H3zm0 6h18v2H3zm0 6h12v2H3z"/></svg><span>Transações</span></button>
+    <button data-view="orders"><svg viewBox="0 0 24 24"><path d="M3 5h18v2H3zm0 6h18v2H3zm0 6h12v2H3z"/></svg><span>Pedidos</span></button>
     <button data-view="explore"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 6.5-2 5-5 2 2-5z"/></svg><span>API</span></button>
   </nav>
 

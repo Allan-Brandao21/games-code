@@ -1,19 +1,22 @@
-// Dados de exemplo determinísticos (mesmo período => mesmos números), para
-// desenvolver o app sem a API. Produtos/afiliados espelham a operação real.
-import { eachDay, resolveRange } from './range.mjs';
-import { delta, pct } from './normalize.mjs';
+// Pedidos de exemplo determinísticos (mesma data => mesmos pedidos), para
+// desenvolver o dash sem a API. Produtos/nichos/etapas espelham a operação.
+import { resolveRange, eachDay } from './range.mjs';
+import { aggregate } from './aov.mjs';
 
 const PRODUCTS = [
-  { name: 'AlkaPic', price: 69, weight: 1.0, refund: 0.028 },
-  { name: 'Lasiberry', price: 79, weight: 0.8, refund: 0.031 },
-  { name: 'AlphaSteel', price: 59, weight: 0.7, refund: 0.041 },
-  { name: 'HoneyBoost', price: 49, weight: 0.6, refund: 0.022 },
-  { name: 'JellyBlue', price: 89, weight: 0.5, refund: 0.036 },
-  { name: 'PrimeAge', price: 99, weight: 0.4, refund: 0.019 },
+  { name: 'AlkaPic', niche: 'Disfunção Erétil', front: { 1: 69, 3: 177, 6: 294 }, us1: 147, us2: 97, us3: 49, ds1: 67, bump: 19, weight: 1.0 },
+  { name: 'JellyBlue', niche: 'Disfunção Erétil', front: { 1: 79, 3: 197, 6: 314 }, us1: 149, us2: 99, us3: 39, ds1: 69, bump: 19, weight: 0.6 },
+  { name: 'Lasiberry', niche: 'Emagrecimento', front: { 1: 69, 3: 177, 6: 294 }, us1: 129, us2: 89, us3: 49, ds1: 59, bump: 17, weight: 0.8 },
+  { name: 'AlphaSteel', niche: 'Pressão Alta', front: { 1: 59, 3: 147, 6: 234 }, us1: 119, us2: 79, us3: 39, ds1: 49, bump: 15, weight: 0.7 },
+  { name: 'HoneyBoost', niche: 'Neuropatia', front: { 1: 49, 3: 127, 6: 204 }, us1: 99, us2: 69, us3: 39, ds1: 39, bump: 15, weight: 0.5 },
+  { name: 'PrimeAge', niche: 'Diabetes', front: { 1: 99, 3: 237, 6: 354 }, us1: 179, us2: 119, us3: 59, ds1: 79, bump: 24, weight: 0.4 },
 ];
-const AFFILIATES = ['Gil Jardim', 'Kaplan Media', 'Squad AOV', 'North Traffic', 'Orgânico', 'Direct'];
+const AFFILIATES = [
+  ['Gil Jardim', 0.26], ['Kaplan Media', 0.18], ['North Traffic', 0.14], ['Squad AOV', 0.12], ['Direct', 0.10],
+  ['LeadPeak', 0.08], ['Orgânico', 0.07], ['MediaFlow', 0.05],
+];
+const HOUR_WEIGHT = [2, 1.5, 1, 0.8, 0.7, 0.8, 1.2, 2, 3, 4, 4.5, 4.5, 4, 4, 4.2, 4.5, 4.8, 5, 5.2, 5.5, 5.4, 4.8, 3.8, 2.8];
 
-// PRNG simples (mulberry32) semeado pela data para ser estável.
 function rng(seed) {
   let a = seed >>> 0;
   return () => {
@@ -25,117 +28,65 @@ function rng(seed) {
   };
 }
 const seedOf = (s) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+function weighted(r, pairs) {
+  const total = pairs.reduce((a, [, w]) => a + w, 0);
+  let x = r() * total;
+  for (const [v, w] of pairs) { x -= w; if (x <= 0) return v; }
+  return pairs[pairs.length - 1][0];
+}
 
-function dayStats(date) {
+export function ordersForDay(date) {
   const r = rng(seedOf(date));
   const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
-  const weekend = dow === 0 || dow === 6 ? 0.78 : 1;
-  const base = 240 * weekend * (0.85 + r() * 0.4);
-  const byProduct = PRODUCTS.map((p) => {
-    const orders = Math.round((base * p.weight) / 4 * (0.8 + r() * 0.4));
-    const upsells = Math.round(orders * (0.22 + r() * 0.12));
-    const revenue = orders * p.price + upsells * 39;
-    const refunds = Math.round(orders * p.refund * (0.6 + r() * 0.8));
-    const chargebacks = Math.round(orders * 0.006 * r() * 2);
-    return { name: p.name, orders, upsells, revenue, refunds, refundAmount: refunds * p.price, chargebacks, chargebackAmount: chargebacks * p.price };
-  });
-  const attempts = byProduct.reduce((a, p) => a + p.orders, 0) / (0.72 + r() * 0.1);
-  const byAffiliate = AFFILIATES.map((name, i) => {
-    const share = [0.3, 0.22, 0.18, 0.13, 0.1, 0.07][i] * (0.85 + r() * 0.3);
-    return { name, share };
-  });
-  return { byProduct, attempts, byAffiliate };
-}
-
-function aggregate(from, to) {
-  const days = eachDay(from, to);
-  const totals = { revenue: 0, orders: 0, upsells: 0, refunds: 0, refundAmount: 0, chargebacks: 0, chargebackAmount: 0, attempts: 0 };
-  const products = new Map();
-  const affiliates = new Map();
-  const series = [];
-  for (const date of days) {
-    const d = dayStats(date);
-    let dayRev = 0;
-    let dayOrders = 0;
-    for (const p of d.byProduct) {
-      dayRev += p.revenue; dayOrders += p.orders;
-      for (const k of ['revenue', 'orders', 'upsells', 'refunds', 'refundAmount', 'chargebacks', 'chargebackAmount']) totals[k] += p[k];
-      const acc = products.get(p.name) || { name: p.name, revenue: 0, orders: 0, refunds: 0 };
-      acc.revenue += p.revenue; acc.orders += p.orders; acc.refunds += p.refunds;
-      products.set(p.name, acc);
-    }
-    totals.attempts += d.attempts;
-    const shareSum = d.byAffiliate.reduce((a, x) => a + x.share, 0);
-    for (const a of d.byAffiliate) {
-      const acc = affiliates.get(a.name) || { name: a.name, revenue: 0, orders: 0 };
-      acc.revenue += (dayRev * a.share) / shareSum;
-      acc.orders += Math.round((dayOrders * a.share) / shareSum);
-      affiliates.set(a.name, acc);
-    }
-    series.push({ date, revenue: Math.round(dayRev), orders: dayOrders });
-  }
-  return { totals, series, products: [...products.values()], affiliates: [...affiliates.values()] };
-}
-
-function recentTransactions(to, n = 30) {
-  const r = rng(seedOf(`recent-${to}`));
-  const statuses = ['approved', 'approved', 'approved', 'approved', 'approved', 'declined', 'refunded', 'pending', 'chargeback'];
+  const weekend = dow === 0 || dow === 6 ? 0.8 : 1;
+  const n = Math.round(230 * weekend * (0.85 + r() * 0.35));
+  const hourPairs = HOUR_WEIGHT.map((w, h) => [h, w]);
   const out = [];
-  let t = new Date(`${to}T23:59:00Z`).getTime();
-  if (t > Date.now()) t = Date.now();
   for (let i = 0; i < n; i++) {
-    t -= Math.round(r() * 14 * 60_000);
-    const p = PRODUCTS[Math.floor(r() * PRODUCTS.length)];
-    const hasUpsell = r() < 0.3;
+    const p = weighted(r, PRODUCTS.map((x) => [x, x.weight]));
+    const internal = r() < 0.22;
+    const affiliate = internal ? 'Interno' : weighted(r, AFFILIATES);
+    const units = weighted(r, [[1, 0.55], [3, 0.3], [6, 0.15]]);
+    const hour = weighted(r, hourPairs);
+    const minute = Math.floor(r() * 60);
+    // horário local (Brasília, -3) -> UTC
+    const t = new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10), hour + 3, minute, Math.floor(r() * 60)));
+    const items = [{ step: 'front', amount: p.front[units] }];
+    const boost = internal ? 1.15 : 1;
+    if (r() < 0.31 * boost) items.push({ step: 'bump', amount: p.bump });
+    const tookUs1 = r() < (0.24 + (units === 1 ? 0.06 : 0)) * boost;
+    if (tookUs1) {
+      items.push({ step: 'us1', amount: p.us1 });
+      if (r() < 0.33) items.push({ step: 'us2', amount: p.us2 });
+      if (r() < 0.18) items.push({ step: 'us3', amount: p.us3 });
+    } else if (r() < 0.11) {
+      items.push({ step: 'ds1', amount: p.ds1 });
+    }
+    const status = weighted(r, [['approved', 0.93], ['refunded', 0.045], ['chargeback', 0.007], ['declined', 0.018]]);
     out.push({
-      id: `PAG-${(seedOf(to) % 9000 + 1000 + i).toString()}`,
-      time: new Date(t).toISOString(),
-      product: p.name + (hasUpsell ? ' + Upsell' : ''),
-      affiliate: AFFILIATES[Math.floor(r() * AFFILIATES.length)],
-      amount: p.price + (hasUpsell ? 39 : 0),
-      status: statuses[Math.floor(r() * statuses.length)],
+      id: `PAG-${date.replace(/-/g, '').slice(2)}-${String(i + 1).padStart(3, '0')}`,
+      time: t.toISOString(),
+      product: p.name,
+      niche: p.niche,
+      affiliate,
+      traffic: internal ? 'internal' : 'affiliates',
+      units,
+      gateway: 'pagamerican',
+      status,
+      items,
+      total: items.reduce((a, it) => a + it.amount, 0),
     });
   }
   return out;
 }
 
-export async function mockDashboard(rangeKey) {
+export function ordersBetween(from, to) {
+  return eachDay(from, to).flatMap(ordersForDay);
+}
+
+export async function mockDashboard(rangeKey, filters = {}) {
   const range = resolveRange(rangeKey);
-  const cur = aggregate(range.from, range.to);
-  const prev = aggregate(range.prevFrom, range.prevTo);
-  const t = cur.totals;
-  const aov = t.orders ? t.revenue / t.orders : 0;
-  const prevAov = prev.totals.orders ? prev.totals.revenue / prev.totals.orders : 0;
-  const approval = pct(t.orders, t.attempts);
-  const prevApproval = pct(prev.totals.orders, prev.totals.attempts);
-  return {
-    source: 'mock',
-    range: { key: range.key, from: range.from, to: range.to },
-    kpis: {
-      revenue: Math.round(t.revenue),
-      orders: t.orders,
-      aov: Math.round(aov * 100) / 100,
-      approvalRate: Math.round(approval * 10) / 10,
-      refunds: t.refunds,
-      refundAmount: Math.round(t.refundAmount),
-      chargebacks: t.chargebacks,
-      chargebackAmount: Math.round(t.chargebackAmount),
-      upsellTakeRate: Math.round(pct(t.upsells, t.orders) * 10) / 10,
-    },
-    deltas: {
-      revenue: delta(t.revenue, prev.totals.revenue),
-      orders: delta(t.orders, prev.totals.orders),
-      aov: delta(aov, prevAov),
-      approvalRate: delta(approval, prevApproval),
-    },
-    series: cur.series,
-    products: cur.products
-      .map((p) => ({ name: p.name, revenue: Math.round(p.revenue), orders: p.orders, refundRate: Math.round(pct(p.refunds, p.orders) * 10) / 10 }))
-      .sort((a, b) => b.revenue - a.revenue),
-    affiliates: cur.affiliates
-      .map((a) => ({ name: a.name, revenue: Math.round(a.revenue), orders: a.orders }))
-      .sort((a, b) => b.revenue - a.revenue),
-    recent: recentTransactions(range.to),
-    generatedAt: new Date().toISOString(),
-  };
+  const orders = ordersBetween(range.from, range.to);
+  const prevOrders = ordersBetween(range.prevFrom, range.prevTo);
+  return aggregate({ orders, prevOrders, range, filters, source: 'mock' });
 }
