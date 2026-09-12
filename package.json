@@ -1,0 +1,18 @@
+{
+  "name": "jarvis-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Versão mobile (PWA) do dash Jarvis, alimentada pela API da PagAmerican via MCP",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node --watch server/index.mjs",
+    "test": "node --test server/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}
