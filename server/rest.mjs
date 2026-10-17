@@ -4,7 +4,7 @@ import { resolveRange } from './range.mjs';
 import { normalizeOrders } from './normalize.mjs';
 import { aggregate } from './aov.mjs';
 
-async function fetchOrders(from, to) {
+export async function fetchOrders(from, to) {
   const url = new URL(config.rest.ordersPath, config.rest.baseUrl);
   url.searchParams.set('from', from);
   url.searchParams.set('to', to);

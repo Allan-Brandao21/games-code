@@ -93,7 +93,7 @@ function buildArgs(tool, from, to, extra = {}) {
 }
 
 // Pagina enquanto o tool devolver next_cursor / next_page / has_more.
-async function fetchAllOrders(tool, from, to) {
+export async function fetchAllOrders(tool, from, to) {
   const all = [];
   let cursor;
   let page = 1;
